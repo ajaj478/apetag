@@ -212,5 +212,132 @@ func _build_hud() -> void:
 	ui.append(Rect2(exit_btn.position, Vector2(130, 64)))
 	if online:
 		var mic_btn := _button("Mic: ON", Callable(), 190)
-		mic_btn.pressed.connect(func():
-			voice.
+		mic_btn.pressed.connect(_toggle_mic.bind(mic_btn))
+		mic_btn.position = Vector2(size.x - 210, 84)
+		hud.add_child(mic_btn)
+		ui.append(Rect2(mic_btn.position, Vector2(190, 64)))
+	if mode == "sandbox":
+		var b1 := _button("+ Block", _spawn_local.bind("block"), 180)
+		b1.position = Vector2(size.x / 2.0 - 190, size.y - 84)
+		hud.add_child(b1)
+		ui.append(Rect2(b1.position, Vector2(180, 64)))
+		var b2 := _button("+ Ball", _spawn_local.bind("ball"), 180)
+		b2.position = Vector2(size.x / 2.0 + 10, size.y - 84)
+		hud.add_child(b2)
+		ui.append(Rect2(b2.position, Vector2(180, 64)))
+	player.ui_rects = ui
+
+func _toggle_mic(btn: Button) -> void:
+	voice.enabled = not voice.enabled
+	btn.text = "Mic: ON" if voice.enabled else "Mic: OFF"
+
+func _exit_game() -> void:
+	Net.close()
+	get_tree().reload_current_scene()
+
+# ---------- Sandbox props ----------
+func _spawn_prop(kind: String, pos: Vector3) -> void:
+	var b := RigidBody3D.new()
+	b.position = pos
+	var mi := MeshInstance3D.new()
+	var cs := CollisionShape3D.new()
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color.from_hsv(randf(), 0.7, 0.95)
+	if kind == "ball":
+		var sm := SphereMesh.new()
+		sm.radius = 0.4
+		sm.height = 0.8
+		mi.mesh = sm
+		var ss := SphereShape3D.new()
+		ss.radius = 0.4
+		cs.shape = ss
+		b.mass = 1.0
+	else:
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.9, 0.9, 0.9)
+		mi.mesh = bm
+		var bs := BoxShape3D.new()
+		bs.size = Vector3(0.9, 0.9, 0.9)
+		cs.shape = bs
+		b.mass = 3.0
+	mi.material_override = mat
+	b.add_child(mi)
+	b.add_child(cs)
+	world.add_child(b)
+
+func _spawn_local(kind: String) -> void:
+	var fwd: Vector3 = -player.global_transform.basis.z
+	var pos: Vector3 = player.global_position + fwd * 2.5 + Vector3(0, 1.5, 0)
+	_spawn_prop(kind, pos)
+	if online:
+		Net.send({"t": "spawn", "k": kind, "p": [pos.x, pos.y, pos.z]})
+
+# ---------- Multiplayer ----------
+func _add_remote(id: int, nm: String) -> void:
+	if remotes.has(id) or id == my_id:
+		return
+	var a = ApeScript.new()
+	add_child(a)
+	a.build(Color.from_hsv(float((id * 37) % 100) / 100.0, 0.55, 0.65), nm)
+	a.setup_voice()
+	a.set_it(id == it_id)
+	remotes[id] = a
+
+func _remove_remote(id: int) -> void:
+	if remotes.has(id):
+		remotes[id].queue_free()
+		remotes.erase(id)
+
+func _refresh_status() -> void:
+	status.text = "Online - players: " + str(remotes.size() + 1)
+
+func _update_role() -> void:
+	if role == null:
+		return
+	if mode == "sandbox" or not online:
+		role.text = ""
+	elif caught:
+		role.text = "CAUGHT - spectating"
+	elif it_id == 0:
+		role.text = "Waiting for players..."
+	elif it_id == my_id:
+		role.text = "YOU ARE THE HUNTER" if mode == "horror" else "YOU ARE IT!"
+	else:
+		role.text = "SURVIVE" if mode == "horror" else "RUN!"
+	player.speed_mult = 1.15 if (mode == "horror" and it_id == my_id) else 1.0
+	for id in remotes:
+		remotes[id].set_it(id == it_id)
+
+func _on_net(m: Dictionary) -> void:
+	match str(m.get("t", "")):
+		"welcome":
+			my_id = int(m["id"])
+			it_id = int(m.get("it", 0))
+			for pl in m["players"]:
+				_add_remote(int(pl["id"]), str(pl["name"]))
+			_refresh_status()
+			_update_role()
+		"joined":
+			_add_remote(int(m["id"]), str(m["name"]))
+			_refresh_status()
+		"left":
+			_remove_remote(int(m["id"]))
+			_refresh_status()
+		"s":
+			var sid := int(m["id"])
+			if remotes.has(sid):
+				var pa: Array = m["p"]
+				remotes[sid].move_to(Vector3(pa[0], pa[1], pa[2]), float(m["r"]))
+		"it":
+			it_id = int(m["id"])
+			_update_role()
+		"caught":
+			var cid := int(m["id"])
+			if cid == my_id:
+				caught = true
+				_update_role()
+			elif remotes.has(cid):
+				remotes[cid].ghost = true
+		"round_end":
+			st
+	
